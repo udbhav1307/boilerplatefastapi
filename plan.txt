@@ -1,0 +1,465 @@
+================================================================================
+  BARBER SHOP BOOKING PLATFORM: PROJECT PLAN
+  Built on the FastAPI boilerplate (Fastro) in this repository
+================================================================================
+
+  Short answer: YES. This boilerplate is a very good fit. It already gives you
+  users, login, roles and permissions, an admin panel, rate limiting,
+  background jobs and Docker. What we add is the barber shop "business
+  layer" on top: shops, staff, services, schedules and bookings.
+
+
+--------------------------------------------------------------------------------
+ 1. THE IDEA IN ONE PARAGRAPH
+--------------------------------------------------------------------------------
+
+  An online booking platform for barber shops with three kinds of people:
+
+    * SHOP OWNER (admin): runs the shop. Adds and manages barbers, services,
+      prices and opening hours. Sees every booking and the reports.
+    * STAFF (barber): logs in to see only THEIR OWN schedule for the day and
+      THEIR OWN past clients. Can't change shop settings or see other
+      barbers' data.
+    * CUSTOMER (user): browses services, sees only barbers who are free at
+      the time they want, books a slot, and can cancel or reschedule.
+
+  The core promise is NO DOUBLE BOOKINGS: a barber can never have two
+  appointments that overlap, and a customer can never be booked in two places
+  at the same time.
+
+
+--------------------------------------------------------------------------------
+ 2. ROLES AND WHAT EACH ONE CAN DO
+--------------------------------------------------------------------------------
+
+  Legend:  [Y] allowed    [own] only their own data    [-] not allowed
+
+  Action                                   Owner   Staff    Customer
+  ---------------------------------------- ------- -------- ---------
+  Add / edit / deactivate staff            [Y]     [-]      [-]
+  Edit a staff profile (name, photo, bio)  [Y]     [-] (*)  [-]
+  Manage services & prices                 [Y]     [-]      [-]
+  Set shop opening hours / holidays        [Y]     [-]      [-]
+  Set a barber's working hours / days off  [Y]     [-] (**) [-]
+  See all bookings in the shop             [Y]     [-]      [-]
+  See a barber's day schedule              [Y]     [own]    [-]
+  See client history                       [Y]     [own]    [-]
+  Mark booking done / no-show              [Y]     [own]    [-]
+  Browse services and available barbers    [Y]     [Y]      [Y]
+  Create a booking                         [Y]     [-] (***) [Y]
+  Cancel / reschedule a booking            [Y]     [-]      [own]
+  See their own booking history            n/a     n/a      [own]
+  Reports (revenue, busiest hours, etc.)   [Y]     [-]      [-]
+
+  (*)   As you asked, staff cannot edit the staff page. Optional later: let
+        them change only their own photo and bio.
+  (**)  Optional later: staff can REQUEST time off, and the owner approves.
+  (***) Optional add-on: staff create walk-in bookings for customers who
+        come in without an appointment (see section 10).
+
+  How this maps onto the boilerplate:
+    * The boilerplate already has roles and permission strings, for example
+      "booking.read_all" and "staff.update" (modules/role/). We create three
+      roles: "owner", "staff" and "customer", each with its own set of
+      permissions.
+    * "is_superuser" stays reserved for YOU, the platform operator, not the
+      shop owner.
+    * One rule that matters a lot: "staff can only see their own data" is
+      NOT enforced by hiding buttons in the app. The server filters every
+      query with "WHERE barber = the logged-in user". Even if a barber types
+      another barber's booking ID into the URL, they get a 404, so it can't
+      be bypassed.
+    * Staff can't log in as each other: every staff member has their own
+      account and password. The boilerplate's session login already handles
+      this (one session belongs to one user, with lockout after repeated wrong
+      passwords). The owner creates the staff account, and the barber sets
+      their own password through an invite link.
+
+
+--------------------------------------------------------------------------------
+ 3. SAAS: ONE SHOP OR MANY SHOPS?
+--------------------------------------------------------------------------------
+
+  You said "SaaS", which usually means MANY barber shops sign up and use the
+  same platform, each paying a subscription. I recommend building it that way
+  from day one, even if you start with just one shop:
+
+    * Every business table gets a "shop_id" column.
+    * An owner only ever sees data for their own shop.
+    * A barber belongs to one shop.
+    * A customer account can book at any shop on the platform.
+
+  Adding shop_id later is painful. Adding it now costs almost nothing, and a
+  single shop is simply "a platform with one shop in it".
+
+  The boilerplate's "tiers" become the shop's SUBSCRIPTION PLAN, for example
+  Free (1 barber), Pro (up to 5 barbers) and Business (unlimited, multiple
+  branches).
+
+
+--------------------------------------------------------------------------------
+ 4. DATA MODEL (DATABASE TABLES)
+--------------------------------------------------------------------------------
+
+  Already in the boilerplate: user, roles, user_roles, tiers, rate_limits.
+
+  New tables:
+
+  shops
+    id, name, slug (used in the URL, e.g. /s/fade-factory), address, phone,
+    timezone (VERY important, e.g. "Asia/Kolkata"), owner_user_id, tier_id,
+    booking_rules (minimum notice, how far ahead customers can book,
+    cancellation window), is_active
+
+  shop_hours
+    shop_id, weekday (0-6), open_time, close_time
+    (a closed day simply has no row)
+
+  shop_closures
+    shop_id, date, reason (for holidays and special closures)
+
+  staff
+    id, shop_id, user_id (their login), display_name, photo, bio,
+    is_active, is_bookable_online, joined_at
+
+  services
+    id, shop_id, name ("Haircut", "Beard trim", "Haircut + Beard"),
+    duration_minutes, price, buffer_minutes (cleanup time after the
+    appointment), is_active
+
+  staff_services
+    staff_id, service_id, optional custom price/duration
+    (not every barber does every service, and a senior barber can charge more)
+
+  staff_working_hours
+    staff_id, weekday, start_time, end_time
+    (a barber's shift, which is always inside the shop's opening hours; one
+    weekday can have two rows to allow a lunch break)
+
+  staff_time_off
+    staff_id, starts_at, ends_at, reason (leave, sick day, personal errand)
+
+  bookings            <-- the heart of the system
+    id, shop_id, staff_id, customer_id, service_id,
+    starts_at, ends_at (stored in UTC; ends_at = start + duration + buffer),
+    status: pending | confirmed | completed | cancelled | no_show,
+    price_at_booking (copied, so later price changes don't rewrite history),
+    customer_note, staff_note (private to the shop),
+    created_by (customer / owner / staff), cancelled_at, cancel_reason,
+    created_at, updated_at
+
+  booking_events (audit log)
+    booking_id, who, what changed, when
+    (useful for sorting out arguments like "I never cancelled that!")
+
+
+--------------------------------------------------------------------------------
+ 5. NO DOUBLE BOOKING: HOW WE GUARANTEE IT
+--------------------------------------------------------------------------------
+
+  This is the most important technical part, so here it is in detail.
+
+  THE PROBLEM
+    Two customers open the app at the same time and both see "Rahul, 5:00pm
+    free". Both tap "Book" within the same second. If the app only checks
+    "is it free?" and then saves, BOTH checks pass and Rahul gets two clients
+    at 5pm. Checking in application code alone is NOT enough.
+
+  THE SOLUTION: let the database refuse it (a PostgreSQL exclusion constraint)
+    PostgreSQL can enforce "no two rows may have overlapping time ranges for
+    the same barber" at the database level. Even if 100 requests arrive at
+    once, exactly one of them wins and the rest are rejected.
+
+      CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+      ALTER TABLE bookings ADD CONSTRAINT no_barber_overlap
+        EXCLUDE USING gist (
+          staff_id WITH =,
+          tstzrange(starts_at, ends_at, '[)') WITH &&
+        )
+        WHERE (status IN ('pending', 'confirmed'));
+
+    What that means in plain English:
+      * "staff_id WITH =": the rule applies to rows for the same barber.
+      * "tstzrange ... WITH &&": their time ranges must not overlap.
+      * "[)": 5:00-5:30 and 5:30-6:00 do NOT clash (back-to-back is fine).
+      * "WHERE status ...": cancelled and completed bookings don't block the
+        slot, so a cancelled slot frees up straight away.
+
+  SAME RULE FOR THE CUSTOMER
+    A second constraint stops one customer holding overlapping bookings
+    (for example, booked with two barbers at the same time):
+
+      ALTER TABLE bookings ADD CONSTRAINT no_customer_overlap
+        EXCLUDE USING gist (
+          customer_id WITH =,
+          tstzrange(starts_at, ends_at, '[)') WITH &&
+        )
+        WHERE (status IN ('pending', 'confirmed'));
+
+  WHAT THE CUSTOMER SEES
+    When the database rejects the booking, the API catches the error and
+    returns "409 Conflict: Sorry, that slot was just taken" along with fresh
+    available slots, so the customer can pick another one in one tap.
+
+  OTHER CHECKS (in the booking service, before saving)
+    * The time is inside the shop's opening hours and not on a closure day.
+    * It is inside the barber's working hours and not during their time off.
+    * The barber actually offers that service.
+    * It respects the minimum notice (e.g. no booking 5 minutes before) and
+      the maximum horizon (e.g. up to 30 days ahead).
+    * It is not in the past.
+    * The customer doesn't already have too many upcoming bookings (to stop
+      spam; e.g. at most 3 upcoming).
+    Everything above runs inside ONE database transaction.
+
+  TIME ZONES
+    Store everything in UTC and convert using the shop's timezone for
+    display. This avoids bugs around daylight-saving changes and makes
+    multi-country support possible later.
+
+
+--------------------------------------------------------------------------------
+ 6. "SHOW ONLY AVAILABLE BARBERS": HOW AVAILABILITY WORKS
+--------------------------------------------------------------------------------
+
+  The customer's flow:
+    1. Choose a shop
+    2. Choose a service (e.g. Haircut, 30 min)
+    3. Choose a date
+    4. See the free time slots and ONLY the barbers who are free for them
+       (plus an "Any available barber" option, which is popular)
+    5. Confirm
+
+  How the slots are calculated, for each barber who offers that service:
+
+    free time = barber's working hours for that weekday
+                ∩ shop opening hours
+                − shop closures
+                − barber's time off
+                − existing pending/confirmed bookings (plus their buffers)
+
+  Then chop the free time into start times on a grid (e.g. every 15
+  minutes), keeping only starts where "start + service duration + buffer"
+  still fits inside a free block.
+
+  API:  GET /api/v1/shops/{slug}/availability?service_id=3&date=2026-10-05
+  Response: a list of times, each with the barbers free at that time.
+
+  Performance: cache the result for ~30 seconds using the boilerplate's
+  @cache decorator, and clear that cache whenever a booking for the shop
+  and day is created or cancelled. Section 5 still guarantees correctness
+  even when the cache is slightly stale.
+
+
+--------------------------------------------------------------------------------
+ 7. WHAT EACH PERSON SEES (SCREENS)
+--------------------------------------------------------------------------------
+
+  SHOP OWNER (admin dashboard)
+    * Today at a glance: a calendar with one column per barber.
+    * Staff: add a barber (sends an invite email or SMS), edit details,
+      deactivate, set working hours and time off, choose their services.
+    * Services & prices.
+    * Shop settings: hours, closures, booking rules, cancellation policy.
+    * All bookings: search and filter; create, move or cancel any booking.
+    * Customers list with visit history.
+    * Reports: bookings per day, revenue, busiest hours, top barber,
+      no-show rate, repeat-customer rate.
+
+  STAFF (barber app, ideally mobile-friendly)
+    * "My day": today's appointments in order, with customer name, service,
+      time and any note.
+    * Buttons to mark a booking Completed or No-show.
+    * "My clients": history of past clients, what service they had and the
+      barber's private notes (e.g. "#2 fade, likes it short on top").
+    * A read-only view of their own weekly schedule.
+    * NOTHING else: no other barbers' schedules, no shop settings, no prices.
+
+  CUSTOMER
+    * Sign up / log in (email and password, or Google).
+    * Browse services and prices.
+    * Book: service, then date, then time, then barber (only available ones
+      shown).
+    * My bookings: upcoming ones (cancel or reschedule within the policy)
+      and past ones.
+    * Booking confirmation and reminders.
+
+
+--------------------------------------------------------------------------------
+ 8. API ENDPOINTS (FIRST VERSION)
+--------------------------------------------------------------------------------
+
+  Public / customer
+    GET    /shops/{slug}                        shop info, hours
+    GET    /shops/{slug}/services               services + prices
+    GET    /shops/{slug}/staff                  active, bookable barbers
+    GET    /shops/{slug}/availability           free slots + free barbers
+    POST   /bookings                            create a booking
+    GET    /me/bookings                         my upcoming and past bookings
+    POST   /me/bookings/{id}/cancel             cancel (within the policy)
+    POST   /me/bookings/{id}/reschedule         move to a new slot
+
+  Staff (always filtered to the logged-in barber)
+    GET    /staff/me/schedule?date=...          my day
+    GET    /staff/me/clients                    my client history
+    POST   /staff/me/bookings/{id}/complete
+    POST   /staff/me/bookings/{id}/no-show
+    PATCH  /staff/me/bookings/{id}/note         private note
+
+  Owner (always filtered to the owner's shop)
+    CRUD   /owner/staff
+    CRUD   /owner/staff/{id}/working-hours
+    CRUD   /owner/staff/{id}/time-off
+    CRUD   /owner/services
+    CRUD   /owner/shop/hours, /owner/shop/closures
+    GET    /owner/bookings?date=&staff_id=&status=
+    POST   /owner/bookings                      book for a customer (e.g. by phone)
+    PATCH  /owner/bookings/{id}                 move or cancel
+    GET    /owner/customers
+    GET    /owner/reports/...
+
+  Each group maps to a new module folder in backend/src/modules/ (shop,
+  staff, service, availability, booking), following the same pattern as
+  the existing modules.
+
+
+--------------------------------------------------------------------------------
+ 9. SECURITY CHECKLIST
+--------------------------------------------------------------------------------
+
+  * Every owner and staff query filters by shop_id (and by staff_id for
+    staff), taken from the logged-in user, NEVER from the request body or
+    URL.
+  * Automated tests for "barber A tries to read barber B's booking, and
+    gets 404" and "owner of shop 1 tries to read shop 2's data, and gets
+    404".
+  * Only owners can create staff accounts. Customers sign up on their own
+    and always get the "customer" role; nobody can sign themselves up as
+    staff.
+  * Customer phone numbers and emails are visible only to that shop's
+    owner and to the barber actually serving them.
+  * Rate-limit the booking and availability endpoints (the boilerplate
+    already has this) so bots can't grab every slot.
+  * Keep the boilerplate's production validator switched on (strong
+    secrets, locked-down CORS).
+
+
+--------------------------------------------------------------------------------
+ 10. SUGGESTED ADD-ONS (my recommendations)
+--------------------------------------------------------------------------------
+
+  HIGH VALUE, add early
+    * Reminders: SMS or WhatsApp 24 hours and 2 hours before the
+      appointment. This is the #1 way to cut no-shows. Use the
+      boilerplate's Taskiq background jobs and a provider such as Twilio,
+      MSG91 or the WhatsApp Business API.
+    * Booking confirmation messages (email, SMS or WhatsApp).
+    * Cancellation policy: e.g. free cancellation up to 2 hours before,
+      after that it's marked "late cancel".
+    * No-show tracking: after 2 no-shows a customer must pay a deposit to
+      book.
+    * Walk-ins: the barber or owner adds a walk-in customer at the counter.
+      This goes through the same no-overlap rule, so walk-ins and online
+      bookings never clash.
+    * "Any available barber" option, which assigns the least-busy free
+      barber.
+
+  MEDIUM, second phase
+    * Online payments or deposits (Stripe or Razorpay), which also reduces
+      no-shows.
+    * Waitlist: "notify me if a 5pm slot opens up". When someone cancels,
+      the first person on the waitlist gets a message.
+    * Reviews and ratings for barbers after a completed visit.
+    * Customer preferences and photos of previous cuts ("same as last
+      time").
+    * Staff commission report (e.g. 40% of each service goes to the
+      barber).
+    * Break management: lunch breaks as blocked time.
+    * Google Calendar sync for barbers.
+
+  LATER, growth features
+    * Multiple branches per owner.
+    * Loyalty points ("10th haircut free"), gift cards, discount codes.
+    * Packages and memberships ("4 haircuts a month").
+    * Products and retail sales (hair wax, etc.).
+    * A public shop page with a QR code to put on the shop wall.
+    * A mobile app (React Native or Flutter) talking to the same API.
+    * Subscription billing for shops using the platform, i.e. your SaaS
+      revenue (maps onto the boilerplate's tiers).
+    * A "Book with us" widget that shops embed on their own website or
+      Instagram link.
+
+
+--------------------------------------------------------------------------------
+ 11. TECH STACK
+--------------------------------------------------------------------------------
+
+  Backend      : this boilerplate (FastAPI, PostgreSQL, Redis, Taskiq)
+  Frontend     : Next.js (React) or Vue. One web app with three areas
+                 (/owner, /staff, /book), mobile-friendly so barbers can
+                 use it on their phones.
+  Database     : PostgreSQL (needed for the no-overlap constraint)
+  Messaging    : Twilio / MSG91 / WhatsApp Business API, plus an email
+                 provider (Resend or SES)
+  Payments     : Razorpay (India) or Stripe
+  Hosting      : a single VPS with Docker to start (the boilerplate's `bp`
+                 CLI generates the compose file), or Railway/Render. Neon or
+                 Supabase for managed Postgres.
+
+
+--------------------------------------------------------------------------------
+ 12. BUILD ROADMAP
+--------------------------------------------------------------------------------
+
+  PHASE 0: Setup (a few days)
+    * Push the boilerplate to your GitHub, generate the first migration,
+      get it running with Docker.
+    * Create the owner / staff / customer roles and their permissions.
+
+  PHASE 1: Core booking MVP (2-3 weeks)
+    * Modules: shop, staff, service, working hours, time off.
+    * Booking module with BOTH no-overlap constraints, plus tests that fire
+      many simultaneous bookings at the same slot and prove only one wins.
+    * Availability endpoint.
+    * Owner can manage everything; customers can book and cancel.
+    * Staff "My day" and "My clients".
+    * Start with a single shop in production.
+
+  PHASE 2: Make it reliable for a real shop (1-2 weeks)
+    * Confirmation messages and reminders (Taskiq jobs).
+    * Cancellation policy, no-show tracking, walk-ins.
+    * Owner dashboard calendar view and basic reports.
+    * Frontend polish on mobile.
+
+  PHASE 3: Turn it into SaaS (2-4 weeks)
+    * Self-service shop sign-up and onboarding wizard.
+    * Subscription plans and billing per shop.
+    * Public shop pages, QR code, embeddable widget.
+
+  PHASE 4: Growth
+    * Payments and deposits, waitlist, reviews, loyalty, multi-branch,
+      mobile app.
+
+
+--------------------------------------------------------------------------------
+ 13. OPEN QUESTIONS TO DECIDE
+--------------------------------------------------------------------------------
+
+  1. Is this for ONE shop (yours or a client's) or a SaaS for MANY shops?
+     (The plan supports both, but it changes Phase 3 and pricing.)
+  2. Can a customer book several services in one visit (haircut + beard
+     with the same barber, back to back)? Recommended: yes, stored as one
+     booking with a total duration.
+  3. Do customers need an account, or can they book as a guest with just
+     a phone number and a one-time code (OTP)? Guest booking with OTP
+     usually gets more bookings.
+  4. Payment at the shop only, or online deposits too?
+  5. Which country or countries first? This decides the SMS/WhatsApp and
+     payment providers and time zones.
+  6. Should barbers be able to block their own time (breaks, personal
+     errands), or only the owner?
+
+================================================================================
+  END OF PLAN
+================================================================================
