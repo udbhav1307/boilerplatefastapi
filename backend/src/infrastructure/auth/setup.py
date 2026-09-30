@@ -15,13 +15,25 @@ boilerplate has no email pipeline, and no route gates on sudo.
 from contextlib import asynccontextmanager
 from typing import Any
 
-from crudauth import CookieConfig, CRUDAuth, NewUserContext, OAuthCredentials, Principal, SessionTransport
+from crudauth import (
+    AuthHooks,
+    CookieConfig,
+    CRUDAuth,
+    HookContext,
+    NewUserContext,
+    OAuthCredentials,
+    Principal,
+    SessionTransport,
+)
 from crudauth.ratelimit import RateLimit, RateLimiterBackend, redis_rate_limiter
 from crudauth.utils import client_ip_key, get_client_ip
 from fastapi import Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...modules.rate_limit.crud import crud_rate_limits
 from ...modules.rate_limit.schemas import RateLimitSelect
+from ...modules.role.defaults import CUSTOMER_ROLE
+from ...modules.role.service import assign_role
 from ...modules.user.constants import NAME_MAX_LENGTH
 from ...modules.user.models import User
 from ..config.enums import RateLimiterBackend as RateLimiterBackendName
@@ -65,6 +77,11 @@ def _new_user_fields(context: NewUserContext) -> dict[str, Any]:
     return {"name": context.suggested_name[:NAME_MAX_LENGTH]}
 
 
+async def _grant_customer_role(user: dict[str, Any], *, db: AsyncSession, context: HookContext) -> None:
+    """Accounts crudauth creates itself (OAuth sign-in) become customers, like password sign-ups."""
+    await assign_role(db, user["id"], CUSTOMER_ROLE)
+
+
 def _oauth_providers() -> dict[str, OAuthCredentials]:
     if settings.OAUTH_GOOGLE_CLIENT_ID and settings.OAUTH_GOOGLE_CLIENT_SECRET:
         return {
@@ -88,6 +105,7 @@ auth = CRUDAuth(
     trusted_proxy_hops=settings.TRUSTED_PROXY_HOPS,
     password_policy=password_policy,
     new_user_fields=_new_user_fields,
+    hooks=AuthHooks(on_after_register=_grant_customer_role),
     oauth=_oauth_providers() or None,
     redirect_base_url=settings.OAUTH_REDIRECT_BASE_URL.rstrip("/"),
     oauth_paths={

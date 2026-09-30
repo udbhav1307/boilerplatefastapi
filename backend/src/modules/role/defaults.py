@@ -15,6 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .models import Role, RolePermission
 from .permission_registry import all_permissions, discover_permissions
 
+OWNER_ROLE = "owner"
+STAFF_ROLE = "staff"
+CUSTOMER_ROLE = "customer"
+
 
 @dataclass(frozen=True)
 class DefaultRole:
@@ -23,15 +27,15 @@ class DefaultRole:
 
 
 DEFAULT_ROLES: dict[str, DefaultRole] = {
-    "owner": DefaultRole(
+    OWNER_ROLE: DefaultRole(
         description="Shop owner: manages the shop, its staff, services and every booking.",
         permissions=frozenset({"shop.manage", "staff.manage", "catalog.manage", "booking.manage_shop"}),
     ),
-    "staff": DefaultRole(
+    STAFF_ROLE: DefaultRole(
         description="Barber: sees their own schedule and clients, marks their bookings done or no-show.",
         permissions=frozenset({"staff.view_own_schedule", "booking.update_own_status"}),
     ),
-    "customer": DefaultRole(
+    CUSTOMER_ROLE: DefaultRole(
         description="Customer: books appointments and cancels their own.",
         permissions=frozenset({"booking.create", "booking.cancel_own"}),
     ),
