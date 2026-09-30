@@ -16,6 +16,9 @@ concurrency:
 
 jobs:
   build:
+    # Publish only from the upstream repo; forks don't have GitHub Pages set up,
+    # so the deploy would fail with a 404. `deploy` needs `build`, so it skips too.
+    if: github.repository == 'benavlabs/FastAPI-boilerplate'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
