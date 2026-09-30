@@ -55,6 +55,12 @@ class RateLimitNotFoundError(ResourceNotFoundError):
     pass
 
 
+class RoleNotFoundError(ResourceNotFoundError):
+    """Raised when a role cannot be found by name."""
+
+    pass
+
+
 class InsufficientCreditsError(DomainError):
     """Raised when a user doesn't have enough credits for an operation."""
 

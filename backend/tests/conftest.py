@@ -45,6 +45,7 @@ from src.infrastructure.auth.dependencies import (  # noqa: E402
 from src.infrastructure.config.settings import get_settings  # noqa: E402
 from src.infrastructure.database.session import Base, async_session  # noqa: E402
 from src.interfaces.main import app  # noqa: E402
+from src.modules.role.defaults import ensure_default_roles  # noqa: E402
 from src.modules.tier.models import Tier  # noqa: E402
 from src.modules.user.models import User  # noqa: E402
 
@@ -100,6 +101,9 @@ async def test_db_engine(test_db_url):
     engine = create_async_engine(test_db_url, echo=False)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Match a started app: the lifespan seeds the default roles on startup.
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await ensure_default_roles(session)
     yield engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)

@@ -20,6 +20,8 @@ from ..common.exceptions import (
 )
 from ..rate_limit.models import RateLimit
 from ..rate_limit.schemas import RateLimitRead
+from ..role.defaults import CUSTOMER_ROLE
+from ..role.service import assign_role
 from ..tier.crud import crud_tiers
 from ..tier.models import Tier
 from ..tier.schemas import TierRead
@@ -99,9 +101,16 @@ class UserService:
             email=user.email,
             hashed_password=await get_password_hash_async(user.password),
         )
-        created_user = await crud_users.create(db=db, object=user_internal, schema_to_select=UserRead)
-        if not created_user:
-            raise PersistenceError("User row was not returned after insert")
+        # One transaction: the account and its customer role are saved together or not at all.
+        try:
+            created_user = await crud_users.create(db=db, object=user_internal, schema_to_select=UserRead, commit=False)
+            if not created_user:
+                raise PersistenceError("User row was not returned after insert")
+            await assign_role(db, created_user["id"], CUSTOMER_ROLE, commit=False)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
         return created_user
 
     async def get_paginated(self, db: AsyncSession, skip: int = 0, limit: int = 100) -> GetMultiResponseDict:
