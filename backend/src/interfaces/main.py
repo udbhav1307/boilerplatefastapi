@@ -6,8 +6,10 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from ..infrastructure.app_factory import create_application, lifespan_factory
 from ..infrastructure.config.settings import get_settings
+from ..infrastructure.database.session import local_session
 from ..infrastructure.security import validate_production_security
 from ..interfaces.api import router
+from ..modules.role.defaults import ensure_default_roles
 from .admin.initialize import create_admin_interface
 
 settings = get_settings()
@@ -22,6 +24,8 @@ async def lifespan_with_security(app: FastAPI) -> AsyncGenerator[None, None]:
     default_lifespan = lifespan_factory(settings)
 
     async with default_lifespan(app):
+        async with local_session() as db:
+            await ensure_default_roles(db)
         yield
 
 
