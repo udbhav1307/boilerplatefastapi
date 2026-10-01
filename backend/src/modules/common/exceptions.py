@@ -61,6 +61,30 @@ class RoleNotFoundError(ResourceNotFoundError):
     pass
 
 
+class ShopNotFoundError(ResourceNotFoundError):
+    """Raised when a shop cannot be found."""
+
+    pass
+
+
+class ClosureNotFoundError(ResourceNotFoundError):
+    """Raised when a shop closure cannot be found."""
+
+    pass
+
+
+class ConflictError(ResourceExistsError):
+    """A clash with existing data, with a message written for the end user (409)."""
+
+    pass
+
+
+class RuleViolationError(ValidationError):
+    """A business rule said no, with a message written for the end user (422)."""
+
+    pass
+
+
 class InsufficientCreditsError(DomainError):
     """Raised when a user doesn't have enough credits for an operation."""
 
