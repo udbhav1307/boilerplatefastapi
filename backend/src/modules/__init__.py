@@ -4,6 +4,7 @@ from .api_keys.models import APIKey, KeyPermission, KeyUsage
 from .rate_limit.models import RateLimit
 from .role.models import Role, RolePermission, UserRole
 from .role.permission_registry import discover_permissions
+from .shop.models import Shop, ShopClosure, ShopHours
 from .tier.models import Tier
 from .user.models import User
 
@@ -19,4 +20,7 @@ __all__ = [
     "Role",
     "RolePermission",
     "UserRole",
+    "Shop",
+    "ShopHours",
+    "ShopClosure",
 ]
