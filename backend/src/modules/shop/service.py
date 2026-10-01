@@ -5,6 +5,7 @@ logged-in user (see ``dependencies.py``), never a shop id from the request. That
 one owner away from another owner's shop.
 """
 
+import os
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -20,7 +21,7 @@ from .models import Shop, ShopClosure, ShopHours
 from .schemas import ClosureCreate, ClosureRead, DayHours, ShopCreate, ShopRead, ShopUpdate, WeeklyHoursSet
 
 
-def shop_today(shop: Shop) -> date:
+def shop_today(shop: Shop) -> str:
     """Today's date where the shop is, which can differ from the server's date."""
     return datetime.now(ZoneInfo(shop.timezone)).date()
 
@@ -56,7 +57,7 @@ class ShopService:
         return result.scalar_one_or_none()
 
     async def get_by_slug(self, slug: str, db: AsyncSession) -> dict[str, Any]:
-        shop = await db.scalar(select(Shop).where(Shop.slug == slug, Shop.is_deleted.is_(False)))
+        shop = await db.scalar(select(Shop).where(Shop.slug == slug))
         if shop is None:
             raise ShopNotFoundError(f"No shop at '{slug}'")
         return _read(shop)
