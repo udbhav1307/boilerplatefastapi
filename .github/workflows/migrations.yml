@@ -1,0 +1,82 @@
+name: Migrations
+
+# No path filters on purpose: this job is a required check, and a required check that
+# doesn't run (because no migration file changed) would leave PRs waiting forever.
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  migrations:
+    runs-on: ubuntu-latest
+
+    # A throwaway Postgres next to the job, the same image as the local stack and production.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: migrations_ci
+        ports:
+          - 5432:5432
+        # Don't start the steps until Postgres accepts connections.
+        options: >-
+          --health-cmd "pg_isready -U ci -d migrations_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    # The app's settings read these; Alembic builds its database URL from them.
+    env:
+      ENVIRONMENT: local
+      SECRET_KEY: test-secret-key-for-testing-only
+      POSTGRES_SERVER: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ci
+      POSTGRES_PASSWORD: ci
+      POSTGRES_DB: migrations_ci
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Sync workspace
+        run: uv sync --all-packages --all-extras
+
+      - name: One migration head
+        # Two branches that each add a migration on the same parent leave two heads, and
+        # `alembic upgrade head` then fails on deploy. Catch it at PR time instead.
+        run: |
+          heads=$(uv run --no-sync alembic heads | grep -c "(head)")
+          if [ "$heads" -ne 1 ]; then
+            echo "::error::Expected exactly 1 migration head, found $heads. Merge them with: alembic merge heads -m 'merge heads'"
+            uv run --no-sync alembic heads
+            exit 1
+          fi
+
+      - name: Upgrade an empty database to head
+        run: uv run --no-sync alembic upgrade head
+
+      - name: Models and migrations agree
+        # Fails when a model changed without a migration ("New upgrade operations detected").
+        run: uv run --no-sync alembic check
+
+      - name: Downgrade to base
+        run: uv run --no-sync alembic downgrade base
+
+      - name: Upgrade again after downgrading
+        # Catches downgrades that leave things behind (e.g. Postgres enum types).
+        run: uv run --no-sync alembic upgrade head
