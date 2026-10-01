@@ -38,7 +38,8 @@ DEFAULT_BATCH_SIZE = 100
 EXCEPTION_MAPPING: dict[type[DomainError], Callable[[str], HTTPException]] = {
     InsufficientCreditsError: lambda message: HTTPException(status_code=402, detail=message or "Insufficient credits."),
     # Messages of these two are written for end users in our own code, so they're safe to show.
-    ConflictError: lambda message: DuplicateValueException(detail=message or "This conflicts with existing data."),
+    # A real 409 Conflict. (FastCRUD's DuplicateValueException, used for the older "exists" errors, is a 422.)
+    ConflictError: lambda message: HTTPException(status_code=409, detail=message or "This conflicts with existing data."),
     RuleViolationError: lambda message: UnprocessableEntityException(detail=message or "The request breaks a rule."),
     UserNotFoundError: lambda message: NotFoundException(detail="User not found."),
     TierNotFoundError: lambda message: NotFoundException(detail="The requested tier was not found."),
